@@ -1699,7 +1699,7 @@
 			usb2-0 {
 				status = "okay";
 				vbus-supply = <&usbc_vbus>;
-				mode = "otg";
+				mode = "host";
 			};
 
 			usb3-0 {
