@@ -30,6 +30,22 @@
 		reg = <0x0 0x80000000 0x0 0xc0000000>;
 	};
 
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		nominal: emc-table@f67cc000 {
+			compatible = "nvidia,tegra210-emc-table";
+			reg = <0x0 0xf67cc000 0x0 0xbea0>;
+		};
+
+		derated: emc-table@f67d7ea0 {
+			compatible = "nvidia,tegra210-emc-table";
+			reg = <0x0 0xf67d7ea0 0x0 0xbea0>;
+		};
+	};
+
 	host1x@50000000 {
 		dc@54200000 {
 			status = "okay";
@@ -1733,6 +1749,11 @@
 		nvidia,core-power-req-active-high;
 		nvidia,sys-clock-req-active-high;
 		status = "okay";
+	};
+
+	emc: external-memory-controller@7001b000 {
+		memory-region = <&nominal>, <&derated>;
+		memory-region-names = "nominal", "derated";
 	};
 
 	usb@70090000 {
