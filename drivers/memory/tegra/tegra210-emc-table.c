@@ -7,7 +7,7 @@
 
 #include "tegra210-emc.h"
 
-#define TEGRA_EMC_MAX_FREQS		16
+#define TEGRA_EMC_MAX_FREQS		10
 
 static int tegra210_emc_table_device_init(struct reserved_mem *rmem,
 					  struct device *dev)

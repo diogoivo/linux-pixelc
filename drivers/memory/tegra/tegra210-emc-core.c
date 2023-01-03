@@ -88,7 +88,8 @@
 #define LPDDR2_MR4_SRR GENMASK(2, 0)
 
 static const struct tegra210_emc_sequence *tegra210_emc_sequences[] = {
-	&tegra210_emc_r21021,
+	&tegra210_emc_r21015,
+	//&tegra210_emc_r21021,
 };
 
 static const struct tegra210_emc_table_register_offsets

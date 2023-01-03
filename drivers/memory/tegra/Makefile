@@ -22,4 +22,4 @@ obj-$(CONFIG_ARCH_TEGRA_186_SOC) += tegra186-emc.o
 obj-$(CONFIG_ARCH_TEGRA_194_SOC) += tegra186-emc.o
 obj-$(CONFIG_ARCH_TEGRA_234_SOC) += tegra186-emc.o
 
-tegra210-emc-y := tegra210-emc-core.o tegra210-emc-cc-r21021.o
+tegra210-emc-y := tegra210-emc-core.o tegra210-emc-cc-r21015.o

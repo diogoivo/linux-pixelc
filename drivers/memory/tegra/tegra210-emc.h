@@ -827,7 +827,7 @@ struct tegra210_emc_timing {
 	u32 training_mod_num;
 	u32 dram_timing_num;
 
-	u32 ptfv_list[PTFV_ARRAY_SIZE];
+	//u32 ptfv_list[PTFV_ARRAY_SIZE];
 
 	u32 burst_regs[BURST_REGS_SIZE];
 	u32 burst_reg_per_ch[BURST_REGS_PER_CHANNEL_SIZE];
@@ -984,6 +984,8 @@ static inline u32 div_o3(u32 a, u32 b)
 	return result;
 }
 
+/* from tegra210-emc-r21015.c */
+extern const struct tegra210_emc_sequence tegra210_emc_r21015;
 /* from tegra210-emc-r21021.c */
 extern const struct tegra210_emc_sequence tegra210_emc_r21021;
 

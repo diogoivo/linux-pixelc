@@ -35,94 +35,16 @@
 
 #define emc_dbg(emc, flags, ...) dev_dbg(emc->dev, __VA_ARGS__)
 
-#define DVFS_CLOCK_CHANGE_VERSION	21021
+#define DVFS_CLOCK_CHANGE_VERSION	21015
 #define EMC_PRELOCK_VERSION		2101
 
-enum {
-	DVFS_SEQUENCE = 1,
-	WRITE_TRAINING_SEQUENCE = 2,
-	PERIODIC_TRAINING_SEQUENCE = 3,
-	DVFS_PT1 = 10,
-	DVFS_UPDATE = 11,
-	TRAINING_PT1 = 12,
-	TRAINING_UPDATE = 13,
-	PERIODIC_TRAINING_UPDATE = 14
-};
-
-/*
- * PTFV defines - basically just indexes into the per table PTFV array.
- */
-#define PTFV_DQSOSC_MOVAVG_C0D0U0_INDEX		0
-#define PTFV_DQSOSC_MOVAVG_C0D0U1_INDEX		1
-#define PTFV_DQSOSC_MOVAVG_C0D1U0_INDEX		2
-#define PTFV_DQSOSC_MOVAVG_C0D1U1_INDEX		3
-#define PTFV_DQSOSC_MOVAVG_C1D0U0_INDEX		4
-#define PTFV_DQSOSC_MOVAVG_C1D0U1_INDEX		5
-#define PTFV_DQSOSC_MOVAVG_C1D1U0_INDEX		6
-#define PTFV_DQSOSC_MOVAVG_C1D1U1_INDEX		7
-#define PTFV_DVFS_SAMPLES_INDEX			9
-#define PTFV_MOVAVG_WEIGHT_INDEX		10
-#define PTFV_CONFIG_CTRL_INDEX			11
-
-#define PTFV_CONFIG_CTRL_USE_PREVIOUS_EMA	(1 << 0)
-
-/*
- * Do arithmetic in fixed point.
- */
-#define MOVAVG_PRECISION_FACTOR		100
-
-/*
- * The division portion of the average operation.
- */
-#define __AVERAGE_PTFV(dev)						\
-	({ next->ptfv_list[PTFV_DQSOSC_MOVAVG_ ## dev ## _INDEX] =	\
-	   next->ptfv_list[PTFV_DQSOSC_MOVAVG_ ## dev ## _INDEX] /	\
-	   next->ptfv_list[PTFV_DVFS_SAMPLES_INDEX]; })
-
-/*
- * Convert val to fixed point and add it to the temporary average.
- */
-#define __INCREMENT_PTFV(dev, val)					\
-	({ next->ptfv_list[PTFV_DQSOSC_MOVAVG_ ## dev ## _INDEX] +=	\
-	   ((val) * MOVAVG_PRECISION_FACTOR); })
-
-/*
- * Convert a moving average back to integral form and return the value.
- */
-#define __MOVAVG_AC(timing, dev)					\
-	((timing)->ptfv_list[PTFV_DQSOSC_MOVAVG_ ## dev ## _INDEX] /	\
-	 MOVAVG_PRECISION_FACTOR)
-
-/* Weighted update. */
-#define __WEIGHTED_UPDATE_PTFV(dev, nval)				\
-	do {								\
-		int w = PTFV_MOVAVG_WEIGHT_INDEX;			\
-		int dqs = PTFV_DQSOSC_MOVAVG_ ## dev ## _INDEX;		\
-									\
-		next->ptfv_list[dqs] =					\
-			((nval * MOVAVG_PRECISION_FACTOR) +		\
-			 (next->ptfv_list[dqs] *			\
-			  next->ptfv_list[w])) /			\
-			(next->ptfv_list[w] + 1);			\
-									\
-		emc_dbg(emc, EMA_UPDATES, "%s: (s=%lu) EMA: %u\n",	\
-			__stringify(dev), nval, next->ptfv_list[dqs]);	\
-	} while (0)
-
-/* Access a particular average. */
-#define __MOVAVG(timing, dev)                      \
-	((timing)->ptfv_list[PTFV_DQSOSC_MOVAVG_ ## dev ## _INDEX])
-
-static u32 update_clock_tree_delay(struct tegra210_emc *emc, int type)
+static u32 update_clock_tree_delay(struct tegra210_emc *emc)
 {
-	bool periodic_training_update = type == PERIODIC_TRAINING_UPDATE;
 	struct tegra210_emc_timing *last = emc->last;
 	struct tegra210_emc_timing *next = emc->next;
 	u32 last_timing_rate_mhz = last->rate / 1000;
 	u32 next_timing_rate_mhz = next->rate / 1000;
-	bool dvfs_update = type == DVFS_UPDATE;
 	s32 tdel = 0, tmdel = 0, adel = 0;
-	bool dvfs_pt1 = type == DVFS_PT1;
 	unsigned long cval = 0;
 	u32 temp[2][2], value;
 	unsigned int i;
@@ -130,68 +52,58 @@ static u32 update_clock_tree_delay(struct tegra210_emc *emc, int type)
 	/*
 	 * Dev0 MSB.
 	 */
-	if (dvfs_pt1 || periodic_training_update) {
-		value = tegra210_emc_mrr_read(emc, 2, 19);
+	value = tegra210_emc_mrr_read(emc, 2, 19);
 
-		for (i = 0; i < emc->num_channels; i++) {
-			temp[i][0] = (value & 0x00ff) << 8;
-			temp[i][1] = (value & 0xff00) << 0;
-			value >>= 16;
-		}
-
-		/*
-		 * Dev0 LSB.
-		 */
-		value = tegra210_emc_mrr_read(emc, 2, 18);
-
-		for (i = 0; i < emc->num_channels; i++) {
-			temp[i][0] |= (value & 0x00ff) >> 0;
-			temp[i][1] |= (value & 0xff00) >> 8;
-			value >>= 16;
-		}
+	for (i = 0; i < emc->num_channels; i++) {
+		temp[i][0] = (value & 0x00ff) << 8;
+		temp[i][1] = (value & 0xff00) << 0;
+		value >>= 16;
 	}
 
-	if (dvfs_pt1 || periodic_training_update) {
-		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-		cval *= 1000000;
-		cval /= last_timing_rate_mhz * 2 * temp[0][0];
+	/*
+	 * Dev0 LSB.
+	 */
+	value = tegra210_emc_mrr_read(emc, 2, 18);
+
+	for (i = 0; i < emc->num_channels; i++) {
+		temp[i][0] |= (value & 0x00ff) >> 0;
+		temp[i][1] |= (value & 0xff00) >> 8;
+		value >>= 16;
 	}
 
-	if (dvfs_pt1)
-		__INCREMENT_PTFV(C0D0U0, cval);
-	else if (dvfs_update)
-		__AVERAGE_PTFV(C0D0U0);
-	else if (periodic_training_update)
-		__WEIGHTED_UPDATE_PTFV(C0D0U0, cval);
+	cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+	cval *= 1000000;
+	cval /= last_timing_rate_mhz * 2 * temp[0][0];
 
-	if (dvfs_update || periodic_training_update) {
-		tdel = next->current_dram_clktree[C0D0U0] -
-				__MOVAVG_AC(next, C0D0U0);
-		tmdel = (tdel < 0) ? -1 * tdel : tdel;
+
+	tdel = next->current_dram_clktree[C0D0U0] - cval;
+	tmdel = (tdel < 0) ? -1 * tdel : tdel;
+	adel = tmdel;
+
+	if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+	    next->tree_margin)
+		next->current_dram_clktree[C0D0U0] = cval;
+
+	cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+	cval *= 1000000;
+	cval /= last_timing_rate_mhz * 2 * temp[0][1];
+
+	tdel = next->current_dram_clktree[C0D0U1] - cval;
+	tmdel = (tdel < 0) ? -1 * tdel : tdel;
+
+	if (tmdel > adel)
 		adel = tmdel;
 
-		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-		    next->tree_margin)
-			next->current_dram_clktree[C0D0U0] =
-				__MOVAVG_AC(next, C0D0U0);
-	}
+	if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+	    next->tree_margin)
+		next->current_dram_clktree[C0D0U1] = cval;
 
-	if (dvfs_pt1 || periodic_training_update) {
+	if (emc->num_channels > 1) {
 		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
 		cval *= 1000000;
-		cval /= last_timing_rate_mhz * 2 * temp[0][1];
-	}
+		cval /= last_timing_rate_mhz * 2 * temp[1][0];
 
-	if (dvfs_pt1)
-		__INCREMENT_PTFV(C0D0U1, cval);
-	else if (dvfs_update)
-		__AVERAGE_PTFV(C0D0U1);
-	else if (periodic_training_update)
-		__WEIGHTED_UPDATE_PTFV(C0D0U1, cval);
-
-	if (dvfs_update || periodic_training_update) {
-		tdel = next->current_dram_clktree[C0D0U1] -
-				__MOVAVG_AC(next, C0D0U1);
+		tdel = next->current_dram_clktree[C1D0U0] - cval;
 		tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
 		if (tmdel > adel)
@@ -199,64 +111,21 @@ static u32 update_clock_tree_delay(struct tegra210_emc *emc, int type)
 
 		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
 		    next->tree_margin)
-			next->current_dram_clktree[C0D0U1] =
-				__MOVAVG_AC(next, C0D0U1);
-	}
+			next->current_dram_clktree[C1D0U0] = cval;
 
-	if (emc->num_channels > 1) {
-		if (dvfs_pt1 || periodic_training_update) {
-			cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-			cval *= 1000000;
-			cval /= last_timing_rate_mhz * 2 * temp[1][0];
-		}
+		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+		cval *= 1000000;
+		cval /= last_timing_rate_mhz * 2 * temp[1][1];
 
-		if (dvfs_pt1)
-			__INCREMENT_PTFV(C1D0U0, cval);
-		else if (dvfs_update)
-			__AVERAGE_PTFV(C1D0U0);
-		else if (periodic_training_update)
-			__WEIGHTED_UPDATE_PTFV(C1D0U0, cval);
+		tdel = next->current_dram_clktree[C1D0U1] - cval;
+		tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-		if (dvfs_update || periodic_training_update) {
-			tdel = next->current_dram_clktree[C1D0U0] -
-					__MOVAVG_AC(next, C1D0U0);
-			tmdel = (tdel < 0) ? -1 * tdel : tdel;
+		if (tmdel > adel)
+			adel = tmdel;
 
-			if (tmdel > adel)
-				adel = tmdel;
-
-			if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-			    next->tree_margin)
-				next->current_dram_clktree[C1D0U0] =
-					__MOVAVG_AC(next, C1D0U0);
-		}
-
-		if (dvfs_pt1 || periodic_training_update) {
-			cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-			cval *= 1000000;
-			cval /= last_timing_rate_mhz * 2 * temp[1][1];
-		}
-
-		if (dvfs_pt1)
-			__INCREMENT_PTFV(C1D0U1, cval);
-		else if (dvfs_update)
-			__AVERAGE_PTFV(C1D0U1);
-		else if (periodic_training_update)
-			__WEIGHTED_UPDATE_PTFV(C1D0U1, cval);
-
-		if (dvfs_update || periodic_training_update) {
-			tdel = next->current_dram_clktree[C1D0U1] -
-					__MOVAVG_AC(next, C1D0U1);
-			tmdel = (tdel < 0) ? -1 * tdel : tdel;
-
-			if (tmdel > adel)
-				adel = tmdel;
-
-			if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-			    next->tree_margin)
-				next->current_dram_clktree[C1D0U1] =
-					__MOVAVG_AC(next, C1D0U1);
-		}
+		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+		    next->tree_margin)
+			next->current_dram_clktree[C1D0U1] = cval;
 	}
 
 	if (emc->num_devices < 2)
@@ -265,150 +134,95 @@ static u32 update_clock_tree_delay(struct tegra210_emc *emc, int type)
 	/*
 	 * Dev1 MSB.
 	 */
-	if (dvfs_pt1 || periodic_training_update) {
-		value = tegra210_emc_mrr_read(emc, 1, 19);
+	value = tegra210_emc_mrr_read(emc, 1, 19);
 
-		for (i = 0; i < emc->num_channels; i++) {
-			temp[i][0] = (value & 0x00ff) << 8;
-			temp[i][1] = (value & 0xff00) << 0;
-			value >>= 16;
-		}
-
-		/*
-		 * Dev1 LSB.
-		 */
-		value = tegra210_emc_mrr_read(emc, 1, 18);
-
-		for (i = 0; i < emc->num_channels; i++) {
-			temp[i][0] |= (value & 0x00ff) >> 0;
-			temp[i][1] |= (value & 0xff00) >> 8;
-			value >>= 16;
-		}
+	for (i = 0; i < emc->num_channels; i++) {
+		temp[i][0] = (value & 0x00ff) << 8;
+		temp[i][1] = (value & 0xff00) << 0;
+		value >>= 16;
 	}
 
-	if (dvfs_pt1 || periodic_training_update) {
-		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-		cval *= 1000000;
-		cval /= last_timing_rate_mhz * 2 * temp[0][0];
+	/*
+	 * Dev1 LSB.
+	 */
+	value = tegra210_emc_mrr_read(emc, 1, 18);
+
+	for (i = 0; i < emc->num_channels; i++) {
+		temp[i][0] |= (value & 0x00ff) >> 0;
+		temp[i][1] |= (value & 0xff00) >> 8;
+		value >>= 16;
 	}
 
-	if (dvfs_pt1)
-		__INCREMENT_PTFV(C0D1U0, cval);
-	else if (dvfs_update)
-		__AVERAGE_PTFV(C0D1U0);
-	else if (periodic_training_update)
-		__WEIGHTED_UPDATE_PTFV(C0D1U0, cval);
+	cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+	cval *= 1000000;
+	cval /= last_timing_rate_mhz * 2 * temp[0][0];
 
-	if (dvfs_update || periodic_training_update) {
-		tdel = next->current_dram_clktree[C0D1U0] -
-				__MOVAVG_AC(next, C0D1U0);
-		tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-		if (tmdel > adel)
-			adel = tmdel;
+	tdel = next->current_dram_clktree[C0D1U0] - cval;
+	tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-		    next->tree_margin)
-			next->current_dram_clktree[C0D1U0] =
-				__MOVAVG_AC(next, C0D1U0);
-	}
+	if (tmdel > adel)
+		adel = tmdel;
 
-	if (dvfs_pt1 || periodic_training_update) {
-		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-		cval *= 1000000;
-		cval /= last_timing_rate_mhz * 2 * temp[0][1];
-	}
+	if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+	    next->tree_margin)
+		next->current_dram_clktree[C0D1U0] = cval;
 
-	if (dvfs_pt1)
-		__INCREMENT_PTFV(C0D1U1, cval);
-	else if (dvfs_update)
-		__AVERAGE_PTFV(C0D1U1);
-	else if (periodic_training_update)
-		__WEIGHTED_UPDATE_PTFV(C0D1U1, cval);
+	cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+	cval *= 1000000;
+	cval /= last_timing_rate_mhz * 2 * temp[0][1];
 
-	if (dvfs_update || periodic_training_update) {
-		tdel = next->current_dram_clktree[C0D1U1] -
-				__MOVAVG_AC(next, C0D1U1);
-		tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-		if (tmdel > adel)
-			adel = tmdel;
+	tdel = next->current_dram_clktree[C0D1U1] - cval;
+	tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-		    next->tree_margin)
-			next->current_dram_clktree[C0D1U1] =
-				__MOVAVG_AC(next, C0D1U1);
-	}
+	if (tmdel > adel)
+		adel = tmdel;
+
+	if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+	    next->tree_margin)
+		next->current_dram_clktree[C0D1U1] = cval;
 
 	if (emc->num_channels > 1) {
-		if (dvfs_pt1 || periodic_training_update) {
-			cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-			cval *= 1000000;
-			cval /= last_timing_rate_mhz * 2 * temp[1][0];
-		}
+		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+		cval *= 1000000;
+		cval /= last_timing_rate_mhz * 2 * temp[1][0];
 
-		if (dvfs_pt1)
-			__INCREMENT_PTFV(C1D1U0, cval);
-		else if (dvfs_update)
-			__AVERAGE_PTFV(C1D1U0);
-		else if (periodic_training_update)
-			__WEIGHTED_UPDATE_PTFV(C1D1U0, cval);
 
-		if (dvfs_update || periodic_training_update) {
-			tdel = next->current_dram_clktree[C1D1U0] -
-					__MOVAVG_AC(next, C1D1U0);
-			tmdel = (tdel < 0) ? -1 * tdel : tdel;
+		tdel = next->current_dram_clktree[C1D1U0] - cval;
+		tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-			if (tmdel > adel)
-				adel = tmdel;
+		if (tmdel > adel)
+			adel = tmdel;
 
-			if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-			    next->tree_margin)
-				next->current_dram_clktree[C1D1U0] =
-					__MOVAVG_AC(next, C1D1U0);
-		}
+		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+		    next->tree_margin)
+			next->current_dram_clktree[C1D1U0] = cval;
 
-		if (dvfs_pt1 || periodic_training_update) {
-			cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
-			cval *= 1000000;
-			cval /= last_timing_rate_mhz * 2 * temp[1][1];
-		}
+		cval = tegra210_emc_actual_osc_clocks(last->run_clocks);
+		cval *= 1000000;
+		cval /= last_timing_rate_mhz * 2 * temp[1][1];
 
-		if (dvfs_pt1)
-			__INCREMENT_PTFV(C1D1U1, cval);
-		else if (dvfs_update)
-			__AVERAGE_PTFV(C1D1U1);
-		else if (periodic_training_update)
-			__WEIGHTED_UPDATE_PTFV(C1D1U1, cval);
+		tdel = next->current_dram_clktree[C1D1U1] - cval;
+		tmdel = (tdel < 0) ? -1 * tdel : tdel;
 
-		if (dvfs_update || periodic_training_update) {
-			tdel = next->current_dram_clktree[C1D1U1] -
-					__MOVAVG_AC(next, C1D1U1);
-			tmdel = (tdel < 0) ? -1 * tdel : tdel;
+		if (tmdel > adel)
+			adel = tmdel;
 
-			if (tmdel > adel)
-				adel = tmdel;
-
-			if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
-			    next->tree_margin)
-				next->current_dram_clktree[C1D1U1] =
-					__MOVAVG_AC(next, C1D1U1);
-		}
+		if (tmdel * 128 * next_timing_rate_mhz / 1000000 >
+		    next->tree_margin)
+			next->current_dram_clktree[C1D1U1] = cval;
 	}
 
 done:
 	return adel;
 }
 
-static u32 periodic_compensation_handler(struct tegra210_emc *emc, u32 type,
+static u32 periodic_compensation_handler(struct tegra210_emc *emc,
 					 struct tegra210_emc_timing *last,
 					 struct tegra210_emc_timing *next)
 {
-#define __COPY_EMA(nt, lt, dev)						\
-	({ __MOVAVG(nt, dev) = __MOVAVG(lt, dev) *			\
-	   (nt)->ptfv_list[PTFV_DVFS_SAMPLES_INDEX]; })
-
-	u32 i, adel = 0, samples = next->ptfv_list[PTFV_DVFS_SAMPLES_INDEX];
+	u32 adel = 0;
 	u32 delay;
 
 	delay = tegra210_emc_actual_osc_clocks(last->run_clocks);
@@ -418,64 +232,15 @@ static u32 periodic_compensation_handler(struct tegra210_emc *emc, u32 type,
 	if (!next->periodic_training)
 		return 0;
 
-	if (type == DVFS_SEQUENCE) {
-		if (last->periodic_training &&
-		    (next->ptfv_list[PTFV_CONFIG_CTRL_INDEX] &
-		     PTFV_CONFIG_CTRL_USE_PREVIOUS_EMA)) {
-			/*
-			 * If the previous frequency was using periodic
-			 * calibration then we can reuse the previous
-			 * frequencies EMA data.
-			 */
-			__COPY_EMA(next, last, C0D0U0);
-			__COPY_EMA(next, last, C0D0U1);
-			__COPY_EMA(next, last, C1D0U0);
-			__COPY_EMA(next, last, C1D0U1);
-			__COPY_EMA(next, last, C0D1U0);
-			__COPY_EMA(next, last, C0D1U1);
-			__COPY_EMA(next, last, C1D1U0);
-			__COPY_EMA(next, last, C1D1U1);
-		} else {
-			/* Reset the EMA.*/
-			__MOVAVG(next, C0D0U0) = 0;
-			__MOVAVG(next, C0D0U1) = 0;
-			__MOVAVG(next, C1D0U0) = 0;
-			__MOVAVG(next, C1D0U1) = 0;
-			__MOVAVG(next, C0D1U0) = 0;
-			__MOVAVG(next, C0D1U1) = 0;
-			__MOVAVG(next, C1D1U0) = 0;
-			__MOVAVG(next, C1D1U1) = 0;
+	tegra210_emc_start_periodic_compensation(emc);
+	udelay(delay);
 
-			for (i = 0; i < samples; i++) {
-				tegra210_emc_start_periodic_compensation(emc);
-				udelay(delay);
-
-				/*
-				 * Generate next sample of data.
-				 */
-				adel = update_clock_tree_delay(emc, DVFS_PT1);
-			}
-		}
-
-		/*
-		 * Seems like it should be part of the
-		 * 'if (last_timing->periodic_training)' conditional
-		 * since is already done for the else clause.
-		 */
-		adel = update_clock_tree_delay(emc, DVFS_UPDATE);
-	}
-
-	if (type == PERIODIC_TRAINING_SEQUENCE) {
-		tegra210_emc_start_periodic_compensation(emc);
-		udelay(delay);
-
-		adel = update_clock_tree_delay(emc, PERIODIC_TRAINING_UPDATE);
-	}
+	adel = update_clock_tree_delay(emc);
 
 	return adel;
 }
 
-static u32 tegra210_emc_r21021_periodic_compensation(struct tegra210_emc *emc)
+static u32 tegra210_emc_r21015_periodic_compensation(struct tegra210_emc *emc)
 {
 	u32 emc_cfg, emc_cfg_o, emc_cfg_update, del, value;
 	static const u32 list[] = {
@@ -545,9 +310,7 @@ static u32 tegra210_emc_r21021_periodic_compensation(struct tegra210_emc *emc)
 		 * 4. Check delta wrt previous values (save value if margin
 		 *    exceeds what is set in table).
 		 */
-		del = periodic_compensation_handler(emc,
-						    PERIODIC_TRAINING_SEQUENCE,
-						    last, last);
+		del = periodic_compensation_handler(emc, last, last);
 
 		/*
 		 * 5. Apply compensation w.r.t. trained values (if clock tree
@@ -582,7 +345,7 @@ static u32 tegra210_emc_r21021_periodic_compensation(struct tegra210_emc *emc)
 /*
  * Do the clock change sequence.
  */
-static void tegra210_emc_r21021_set_clock(struct tegra210_emc *emc, u32 clksrc)
+static void tegra210_emc_r21015_set_clock(struct tegra210_emc *emc, u32 clksrc)
 {
 	/* state variables */
 	static bool fsp_for_next_freq;
@@ -739,8 +502,7 @@ static void tegra210_emc_r21021_set_clock(struct tegra210_emc *emc, u32 clksrc)
 		delay = 1000 * tegra210_emc_actual_osc_clocks(last->run_clocks);
 		udelay((delay / last->rate) + 2);
 
-		value = periodic_compensation_handler(emc, DVFS_SEQUENCE, fake,
-						      next);
+		value = periodic_compensation_handler(emc, fake, next);
 		value = (value * 128 * next->rate / 1000) / 1000000;
 
 		if (next->periodic_training && value > next->tree_margin)
@@ -1767,8 +1529,8 @@ static void tegra210_emc_r21021_set_clock(struct tegra210_emc *emc, u32 clksrc)
 	/* Done! Yay. */
 }
 
-const struct tegra210_emc_sequence tegra210_emc_r21021 = {
-	.revision = 0x7,
-	.set_clock = tegra210_emc_r21021_set_clock,
-	.periodic_compensation = tegra210_emc_r21021_periodic_compensation,
+const struct tegra210_emc_sequence tegra210_emc_r21015 = {
+	.revision = 0x6,
+	.set_clock = tegra210_emc_r21015_set_clock,
+	.periodic_compensation = tegra210_emc_r21015_periodic_compensation,
 };
