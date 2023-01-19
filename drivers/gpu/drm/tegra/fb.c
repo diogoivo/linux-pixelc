@@ -116,10 +116,62 @@ static struct drm_framebuffer *tegra_fb_alloc(struct drm_device *drm,
 	struct drm_framebuffer *fb;
 	unsigned int i;
 	int err;
+	struct drm_mode_fb_cmd2 mode_cmd_local;
 
 	fb = kzalloc(sizeof(*fb), GFP_KERNEL);
 	if (!fb)
 		return ERR_PTR(-ENOMEM);
+
+	/* Check for implicitly defined modifiers using
+	 * the state defined by tegra_gem_set_tiling().
+	 */
+	if (!(mode_cmd->flags & DRM_MODE_FB_MODIFIERS)) {
+		uint64_t modifier;
+
+		mode_cmd_local = *mode_cmd;
+
+		switch (planes[0]->tiling.mode) {
+		case TEGRA_BO_TILING_MODE_PITCH:
+			modifier = DRM_FORMAT_MOD_LINEAR;
+			break;
+
+		case TEGRA_BO_TILING_MODE_TILED:
+			modifier = DRM_FORMAT_MOD_NVIDIA_TEGRA_TILED;
+			break;
+
+		/* With all rigour this reconstruction of the modifier is
+		 * incomplete, as it skips some fields (like page kind).
+		 * However, along with the sector layout below it should
+		 * contain all the bits of information needed by the
+		 * scanout hardware.
+		 */
+		case TEGRA_BO_TILING_MODE_BLOCK:
+			unsigned long height = planes[0]->tiling.value;
+
+			if (height > 5) {
+				dev_err(drm->dev, "invalid block height value: %ld\n",
+					height);
+
+				err = -EINVAL;
+				goto cleanup;
+			}
+
+			modifier = DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(height);
+			break;
+
+		default:
+			dev_err(drm->dev, "invalid tiling mode\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+
+		if (planes[0]->tiling.sector_layout == DRM_TEGRA_GEM_SECTOR_LAYOUT_GPU)
+			modifier |= DRM_FORMAT_MOD_NVIDIA_SECTOR_LAYOUT;
+
+		mode_cmd_local.modifier[0] = modifier;
+
+		mode_cmd = &mode_cmd_local;
+	}
 
 	drm_helper_mode_fill_fb_struct(drm, fb, mode_cmd);
 
@@ -130,11 +182,14 @@ static struct drm_framebuffer *tegra_fb_alloc(struct drm_device *drm,
 	if (err < 0) {
 		dev_err(drm->dev, "failed to initialize framebuffer: %d\n",
 			err);
-		kfree(fb);
-		return ERR_PTR(err);
+		goto cleanup;
 	}
 
 	return fb;
+
+cleanup:
+	kfree(fb);
+	return ERR_PTR(err);
 }
 
 struct drm_framebuffer *tegra_fb_create(struct drm_device *drm,
