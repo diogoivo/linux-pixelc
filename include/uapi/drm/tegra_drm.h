@@ -508,6 +508,9 @@ struct drm_tegra_submit {
 #define DRM_TEGRA_GEM_TILING_MODE_TILED 1
 #define DRM_TEGRA_GEM_TILING_MODE_BLOCK 2
 
+#define DRM_TEGRA_GEM_SECTOR_LAYOUT_TEGRA 0
+#define DRM_TEGRA_GEM_SECTOR_LAYOUT_GPU 1
+
 /**
  * struct drm_tegra_gem_set_tiling - parameters for the set tiling IOCTL
  */
@@ -543,11 +546,11 @@ struct drm_tegra_gem_set_tiling {
 	__u32 value;
 
 	/**
-	 * @pad:
+	 * @sector_layout:
 	 *
-	 * Structure padding that may be used in the future. Must be 0.
+	 * Specify low-level sector layout.
 	 */
-	__u32 pad;
+	__u32 sector_layout;
 };
 
 /**
@@ -578,11 +581,12 @@ struct drm_tegra_gem_get_tiling {
 	__u32 value;
 
 	/**
-	 * @pad:
+	 * @sector_layout:
 	 *
-	 * Structure padding that may be used in the future. Must be 0.
+	 * The sector layout parameter currently associated with the GEM object.
+	 * Set by the kernel upon successful completion of the IOCTL.
 	 */
-	__u32 pad;
+	__u32 sector_layout;
 };
 
 #define DRM_TEGRA_GEM_BOTTOM_UP		(1 << 0)

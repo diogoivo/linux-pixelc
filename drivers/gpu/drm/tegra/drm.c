@@ -612,6 +612,7 @@ static int tegra_gem_set_tiling(struct drm_device *drm, void *data,
 	enum tegra_bo_tiling_mode mode;
 	struct drm_gem_object *gem;
 	unsigned long value = 0;
+	enum tegra_bo_sector_layout layout;
 	struct tegra_bo *bo;
 
 	switch (args->mode) {
@@ -644,6 +645,19 @@ static int tegra_gem_set_tiling(struct drm_device *drm, void *data,
 		return -EINVAL;
 	}
 
+	switch (args->sector_layout) {
+	case DRM_TEGRA_GEM_SECTOR_LAYOUT_TEGRA:
+		layout = TEGRA_BO_SECTOR_LAYOUT_TEGRA;
+		break;
+
+	case DRM_TEGRA_GEM_SECTOR_LAYOUT_GPU:
+		layout = TEGRA_BO_SECTOR_LAYOUT_GPU;
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
 	gem = drm_gem_object_lookup(file, args->handle);
 	if (!gem)
 		return -ENOENT;
@@ -652,6 +666,7 @@ static int tegra_gem_set_tiling(struct drm_device *drm, void *data,
 
 	bo->tiling.mode = mode;
 	bo->tiling.value = value;
+	bo->tiling.sector_layout = layout;
 
 	drm_gem_object_put(gem);
 
@@ -686,6 +701,20 @@ static int tegra_gem_get_tiling(struct drm_device *drm, void *data,
 	case TEGRA_BO_TILING_MODE_BLOCK:
 		args->mode = DRM_TEGRA_GEM_TILING_MODE_BLOCK;
 		args->value = bo->tiling.value;
+		break;
+
+	default:
+		err = -EINVAL;
+		break;
+	}
+
+	switch (bo->tiling.sector_layout) {
+	case TEGRA_BO_SECTOR_LAYOUT_TEGRA:
+		args->sector_layout = DRM_TEGRA_GEM_SECTOR_LAYOUT_TEGRA;
+		break;
+
+	case TEGRA_BO_SECTOR_LAYOUT_GPU:
+		args->sector_layout = DRM_TEGRA_GEM_SECTOR_LAYOUT_GPU;
 		break;
 
 	default:
